@@ -16,3 +16,30 @@
     return orig(c);
   };
 })();
+
+/* iOS "Failed to start the audio device": a context that starts in the
+ * default playback session can't switch to recording, and a forced 16 kHz
+ * rate can't run on Bluetooth (AirPods) routes. Declare a play-and-record
+ * session up front, and let the context use the hardware rate (the mic
+ * worklet resamples to 16 kHz itself). If a context still fails to start,
+ * close it so the next tap of Start builds a fresh one. */
+(function () {
+  try { if (navigator.audioSession) navigator.audioSession.type = "play-and-record"; } catch (_) {}
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const Orig = window.AudioContext || window.webkitAudioContext;
+  if (!Orig || !isIOS) return;
+  class SafeCtx extends Orig {
+    constructor(opts) {
+      const o = Object.assign({}, opts); delete o.sampleRate;
+      super(o);
+      const resume = this.resume.bind(this);
+      this.resume = () => resume().catch((err) => {
+        try { this.close(); } catch (_) {}
+        throw err;
+      });
+    }
+  }
+  window.AudioContext = SafeCtx;
+  if (window.webkitAudioContext) window.webkitAudioContext = SafeCtx;
+})();
