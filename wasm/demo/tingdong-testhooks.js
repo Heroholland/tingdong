@@ -7,6 +7,19 @@
     const ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1";
     try { Object.defineProperty(navigator, "userAgent", { get: () => ua }); } catch (_) {}
   }
+  /* Always on (cheap): tally GPU buffer bytes so the log can report them. */
+  if (navigator.gpu && window.GPUDevice) {
+    const orig = GPUDevice.prototype.createBuffer;
+    window.__gpuBytes = 0; window.__gpuBiggest = 0;
+    GPUDevice.prototype.createBuffer = function (d) {
+      window.__gpuBytes += d.size; window.__gpuBiggest = Math.max(window.__gpuBiggest, d.size);
+      const b = orig.call(this, d);
+      const destroy = b.destroy.bind(b);
+      let gone = false;
+      b.destroy = () => { if (!gone) { gone = true; window.__gpuBytes -= d.size; } return destroy(); };
+      return b;
+    };
+  }
   if (q.has("fakemic")) {
     const SAMPLE = "https://raw.githubusercontent.com/ainoya/qwen-asr/HEAD/samples/jfk.wav";
     navigator.mediaDevices.getUserMedia = async () => {

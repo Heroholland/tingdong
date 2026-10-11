@@ -289,7 +289,8 @@ let crashedIn = "";   // a crash while loading must not auto-load into another o
 function breadcrumb() {
   if (phase !== "loading" && phase !== "listening") { try { localStorage.removeItem(CRASH); } catch (_) {} return; }
   const lines = [...$("log").children].slice(-25).map((d) => d.textContent);
-  const mem = performance.memory ? ` js=${(performance.memory.usedJSHeapSize / 1e6).toFixed(0)}MB` : "";
+  const mem = (performance.memory ? ` js=${(performance.memory.usedJSHeapSize / 1e6).toFixed(0)}MB` : "") +
+    (window.__gpuBytes ? ` gpu=${(window.__gpuBytes / 1e6).toFixed(0)}MB` : "");
   try {
     localStorage.setItem(CRASH, JSON.stringify({
       phase, translate: S.translate, mt: mtReady ? "ready" : mtLoading ? "loading" : "off",
