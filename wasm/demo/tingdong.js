@@ -298,6 +298,8 @@ function breadcrumb() {
   } catch (_) {}
 }
 setInterval(breadcrumb, 500);
+/* The engine logs its reason right before it reloads itself; save on every line. */
+new MutationObserver(breadcrumb).observe($("log"), { childList: true });
 try {
   const last = JSON.parse(localStorage.getItem(CRASH) || "null");
   crashedIn = last?.phase || "";
