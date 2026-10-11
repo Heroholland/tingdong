@@ -7,7 +7,7 @@ const CFG = window.QWEN_PLAYGROUND || {};
 const KEY = "tingdong-qwen";
 
 /* ---------------- settings ---------------- */
-const S = { lang: "Chinese", chunk: "2", micdev: "", translate: true, speak: false, preview: true, showzh: true };
+const S = { engine: "apple", lang: "Chinese", chunk: "2", micdev: "", translate: true, speak: false, preview: true, showzh: true };
 try { Object.assign(S, JSON.parse(localStorage.getItem(KEY) || "{}")); } catch (_) {}
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (_) {} };
 for (const k of Object.keys(S)) {
@@ -16,6 +16,7 @@ for (const k of Object.keys(S)) {
   el.addEventListener("change", () => {
     S[k] = el.type === "checkbox" ? el.checked : el.value;
     save(); applyView();
+    if (k === "engine") { location.reload(); return; }
     if (k === "translate") {
       if (S.translate && phase !== "idle" && phase !== "loading") loadMT();
       if (!S.translate && mt) { mt.terminate(); mt = null; mtReady = mtBusy = mtLoading = false; finals.length = 0; previewJob = null; }
@@ -154,6 +155,7 @@ function readOut() {
 function lastMatch(re, s) { let i = -1, m; re.lastIndex = 0; while ((m = re.exec(s))) i = m.index; return i; }
 
 function segment(force) {
+  if (S.engine === "apple") return;
   const { c, p } = readOut();
   if (c.length < doneUpTo) doneUpTo = c.length;   // new session, or the final rewrite came out shorter
   const now = performance.now();
@@ -188,6 +190,7 @@ function setNote(t) {
   noteTimer = setTimeout(() => { delete st.dataset.note; }, 4000);
 }
 function derive() {
+  if (S.engine === "apple") return apple.listening ? "listening" : "ready";
   const loaded = !$("mic").disabled;
   const listening = !$("micstop").classList.contains("hide");
   const status = $("status").textContent;
@@ -224,6 +227,11 @@ function onPhase(prev, now) {
 setInterval(render, 250);
 
 go.onclick = () => {
+  if (S.engine === "apple") {
+    if (phase === "ready") appleStart(); else appleStop();
+    setTimeout(render, 0);
+    return;
+  }
   if (phase === "idle") {
     loadMT();                 // download both models in parallel
     $("load").click();
@@ -274,7 +282,7 @@ $("chunk").value = S.chunk;
   try {
     const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle("qwen-asr");
     const f = await (await dir.getFileHandle(`model-${CFG.modelSize}.bin`)).getFile();
-    if (f.size === Number(CFG.modelSize) && phase === "idle" && crashedIn !== "loading") go.click();
+    if (f.size === Number(CFG.modelSize) && phase === "idle" && crashedIn !== "loading" && S.engine === "qwen") go.click();
   } catch (_) { /* not cached yet */ }
 })();
 
@@ -319,3 +327,50 @@ try {
       : "It crashed last time even without the translator. See Log."), 300);
   }
 } catch (_) {}
+
+/* ---------------- Apple speech engine (Safari's built-in recognizer) ---------------- */
+/* Light on memory: the recognition runs in iOS, not in the page. It streams
+ * audio to Apple, so it needs a connection. Each final result becomes a card. */
+const apple = { rec: null, listening: false, want: false };
+const appleLang = () => S.lang === "Cantonese" ? "zh-HK" : "zh-CN";
+function appleStart() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { setNote("This browser has no built-in speech recognition. Switch engine in ⚙︎."); return; }
+  if (S.speak && "speechSynthesis" in window) speechSynthesis.speak(new SpeechSynthesisUtterance(" "));
+  loadMT();
+  const rec = new SR();
+  rec.lang = appleLang(); rec.continuous = true; rec.interimResults = true;
+  rec.onresult = (e) => {
+    let interim = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const r = e.results[i], t = r[0].transcript.trim();
+      if (r.isFinal) { if (t && hasWords(t)) addFinal(t); }
+      else interim += t;
+    }
+    setLive("", interim);
+  };
+  rec.onerror = (e) => {
+    if (e.error === "no-speech" || e.error === "aborted") return;
+    if (e.error === "not-allowed" || e.error === "service-not-allowed") apple.want = false;
+    setNote("Speech recognition: " + e.error);
+  };
+  /* iOS ends the session after a pause; keep it going until Stop. */
+  rec.onend = () => {
+    setLive("", "");
+    if (apple.want) { try { rec.start(); return; } catch (_) {} }
+    apple.listening = false; apple.rec = null; render();
+  };
+  apple.rec = rec; apple.want = true; apple.listening = true;
+  try { rec.start(); } catch (e) { apple.want = apple.listening = false; setNote("Could not start: " + e.message); }
+}
+function appleStop() {
+  apple.want = false;
+  try { apple.rec?.stop(); } catch (_) {}
+  apple.listening = false;
+}
+if (S.engine === "apple") {
+  $("chip").textContent = "Apple speech"; $("chip").className = "ok";
+  $("empty").innerHTML = "Tap <b>Start</b> and set the phone near the conversation.<br><br>" +
+    "Speech recognition: Apple (needs internet). Translation runs on the iPhone.";
+  if (S.translate) loadMT();
+}

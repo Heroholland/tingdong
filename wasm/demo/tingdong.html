@@ -94,6 +94,11 @@ footer{background:var(--panel);border-top:1px solid var(--line);
     <button class="icon" id="gear" aria-label="Settings">⚙︎</button>
   </div>
   <div id="sheet">
+    <div class="set"><div>Speech engine<small>Apple: light, needs internet. Qwen: on-device, heavy</small></div>
+      <select id="engine">
+        <option value="apple" selected>Apple (Safari)</option>
+        <option value="qwen">Qwen3-ASR on-device</option>
+      </select></div>
     <div class="set"><div>Spoken language<small>Auto handles Chinese/English mixing</small></div>
       <select id="lang">
         <option value="Chinese" selected>Mandarin</option>
