@@ -1,0 +1,136 @@
+# Tingdong: build the Qwen3-ASR wasm engine, make sure a packed 0.6B model is
+# on Hugging Face (packing it once if not), and publish the app to GitHub Pages.
+#
+# One-time setup (repo Settings):
+#   Pages -> Build and deployment -> Source: "GitHub Actions"
+#   Secrets and variables -> Actions:
+#     secret   HF_TOKEN       a Hugging Face token with WRITE access
+#     variable HF_MODEL_REPO  e.g. yourname/qwen3-asr-0.6b-q8-packed
+# Then: Actions -> tingdong -> Run workflow.
+name: tingdong
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['wasm/**', 'qwen_asr*', '.github/workflows/tingdong.yml']
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  HF_MODEL_REPO: ${{ vars.HF_MODEL_REPO }}
+
+jobs:
+  model:
+    runs-on: ubuntu-latest
+    outputs:
+      size: ${{ steps.size.outputs.size }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check settings
+        run: |
+          if [ -z "$HF_MODEL_REPO" ]; then
+            echo "::error::Set the HF_MODEL_REPO repository variable (e.g. yourname/qwen3-asr-0.6b-q8-packed)"; exit 1
+          fi
+
+      - name: Is the packed model already on Hugging Face?
+        id: have
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' -I -L "https://huggingface.co/$HF_MODEL_REPO/resolve/main/qwen-asr-q8.bin")
+          echo "HTTP $code"
+          echo "exists=$([ "$code" = 200 ] && echo 1 || echo 0)" >> "$GITHUB_OUTPUT"
+
+      - name: Build the native packer
+        if: steps.have.outputs.exists != '1'
+        run: make noblas
+
+      - name: Download Qwen3-ASR-0.6B
+        if: steps.have.outputs.exists != '1'
+        run: ./download_model.sh --model small --dir qwen3-asr-0.6b
+
+      - name: Pack to Q8 (single file the browser streams straight into memory)
+        if: steps.have.outputs.exists != '1'
+        run: |
+          mkdir -p packed
+          cp qwen3-asr-0.6b/{config.json,generation_config.json,vocab.json,merges.txt} packed/
+          ./qwen_asr -d qwen3-asr-0.6b --pack-q8 packed/qwen-asr-q8.bin
+          ls -la packed
+
+      - name: Smoke-test the packed model natively
+        if: steps.have.outputs.exists != '1'
+        run: |
+          rm qwen3-asr-0.6b/model.safetensors   # force the packed image to be the one used
+          cp packed/qwen-asr-q8.bin qwen3-asr-0.6b/
+          ./qwen_asr -d qwen3-asr-0.6b -i samples/jfk.wav --silent | tee out.txt
+          grep -qi "country" out.txt
+
+      - name: Upload to Hugging Face
+        if: steps.have.outputs.exists != '1'
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          if [ -z "$HF_TOKEN" ]; then echo "::error::Add an HF_TOKEN secret with write access"; exit 1; fi
+          pip install -q "huggingface_hub>=0.24"
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          repo = os.environ["HF_MODEL_REPO"]
+          api.create_repo(repo, repo_type="model", exist_ok=True)
+          api.upload_folder(repo_id=repo, folder_path="packed", repo_type="model",
+                            commit_message="Qwen3-ASR-0.6B packed Q8 for the browser engine")
+          PY
+
+      - name: Model size
+        id: size
+        run: |
+          size=$(curl -sIL "https://huggingface.co/$HF_MODEL_REPO/resolve/main/qwen-asr-q8.bin" \
+                 | grep -i '^content-length' | tail -1 | tr -dc '0-9')
+          [ -n "$size" ] && [ "$size" -gt 100000000 ] || { echo "::error::could not read model size ($size)"; exit 1; }
+          echo "size=$size" | tee -a "$GITHUB_OUTPUT"
+
+  site:
+    needs: model
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.61
+      - name: Build wasm engine
+        run: bash wasm/build.sh
+      - name: Assemble site
+        run: |
+          mkdir -p _site
+          cp wasm/demo/*.html wasm/demo/*.js wasm/demo/*.wasm _site/
+          cp wasm/demo/tingdong.webmanifest wasm/demo/tingdong-icon.png _site/ 2>/dev/null || true
+          mv _site/index.html _site/qwen-demo.html     # the upstream engine demo stays reachable
+          cp _site/tingdong.html _site/index.html
+          cat > _site/playground-config.js <<CFG
+          window.QWEN_PLAYGROUND = {
+            modelBase: "https://huggingface.co/${HF_MODEL_REPO}/resolve/main",
+            modelSize: ${{ needs.model.outputs.size }},
+          };
+          CFG
+          ls -la _site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: site
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
