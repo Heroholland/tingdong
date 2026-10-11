@@ -33,7 +33,10 @@ if (typeof window === "undefined") {
     e.respondWith((async () => {
       const cache = await caches.open(SHELL);
       try {
-        const res = await fetch(req);
+        /* no-cache: revalidate, so an update shows up on the next open
+         * instead of after the CDN's 10-minute max-age. */
+        const same = new URL(req.url).origin === self.location.origin;
+        const res = await fetch(same ? new Request(req, { cache: "no-cache" }) : req);
         if (res.ok) cache.put(req, res.clone()).catch(() => {});
         return stamp(res);
       } catch (err) {
