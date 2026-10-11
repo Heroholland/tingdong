@@ -64,6 +64,20 @@
   window.fetch = async function (input, init) {
     const u = typeof input === "string" ? input : input?.url;
     const method = (init?.method || (typeof input === "object" && input?.method) || "GET").toUpperCase();
+    /* The small tokenizer/config files next to the model: network first,
+     * a saved copy when offline. */
+    if (method === "GET" && u !== url && typeof u === "string" && u.startsWith(CFG.modelBase + "/")) {
+      const cache = await caches.open("tingdong-model-meta");
+      try {
+        const res = await origFetch(input, init);
+        if (res.ok) await cache.put(u, res.clone());
+        return res;
+      } catch (e) {
+        const hit = await cache.match(u);
+        if (hit) return hit;
+        throw e;
+      }
+    }
     if (u !== url || method !== "GET" || init?.headers?.Range) return origFetch(input, init);
     try {
       pending = pending || ensure();
