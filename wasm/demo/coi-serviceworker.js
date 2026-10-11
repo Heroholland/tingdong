@@ -8,19 +8,40 @@ if (typeof window === "undefined") {
   /* Service-worker context: proxy fetches, stamping the isolation headers. */
   self.addEventListener("install", () => self.skipWaiting());
   self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
+  /* Offline: keep a copy of the app's own files and the translator library so
+   * the Home Screen app opens with no connection. Network first (updates win),
+   * cache when offline. The speech model lives in OPFS and the translator
+   * weights in transformers.js's own cache, so neither is copied here. */
+  const SHELL = "tingdong-shell-v1";
+  const keep = (req) => req.method === "GET" && !req.headers.has("range") &&
+    (new URL(req.url).origin === self.location.origin ||
+     req.url.startsWith("https://cdn.jsdelivr.net/npm/@huggingface/transformers@"));
+  const stamp = (res) => {
+    if (res.status === 0) return res; /* opaque: pass through untouched */
+    const h = new Headers(res.headers);
+    h.set("Cross-Origin-Opener-Policy", "same-origin");
+    h.set("Cross-Origin-Embedder-Policy", "require-corp");
+    h.set("Cross-Origin-Resource-Policy", "cross-origin");
+    return new Response(res.body, {
+      status: res.status, statusText: res.statusText, headers: h,
+    });
+  };
   self.addEventListener("fetch", (e) => {
     const req = e.request;
     if (req.cache === "only-if-cached" && req.mode !== "same-origin") return;
-    e.respondWith(fetch(req).then((res) => {
-      if (res.status === 0) return res; /* opaque: pass through untouched */
-      const h = new Headers(res.headers);
-      h.set("Cross-Origin-Opener-Policy", "same-origin");
-      h.set("Cross-Origin-Embedder-Policy", "require-corp");
-      h.set("Cross-Origin-Resource-Policy", "cross-origin");
-      return new Response(res.body, {
-        status: res.status, statusText: res.statusText, headers: h,
-      });
-    }));
+    if (!keep(req)) { e.respondWith(fetch(req).then(stamp)); return; }
+    e.respondWith((async () => {
+      const cache = await caches.open(SHELL);
+      try {
+        const res = await fetch(req);
+        if (res.ok) cache.put(req, res.clone()).catch(() => {});
+        return stamp(res);
+      } catch (err) {
+        const hit = await cache.match(req, { ignoreSearch: req.mode === "navigate" });
+        if (hit) return stamp(hit);
+        throw err;
+      }
+    })());
   });
 } else if (!window.crossOriginIsolated && window.isSecureContext &&
            navigator.serviceWorker) {

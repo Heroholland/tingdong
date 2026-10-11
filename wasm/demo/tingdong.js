@@ -7,7 +7,7 @@ const CFG = window.QWEN_PLAYGROUND || {};
 const KEY = "tingdong-qwen";
 
 /* ---------------- settings ---------------- */
-const S = { lang: "Chinese", chunk: "2", micdev: "", speak: false, preview: true, showzh: true };
+const S = { lang: "Chinese", chunk: "2", micdev: "", translate: true, speak: false, preview: true, showzh: true };
 try { Object.assign(S, JSON.parse(localStorage.getItem(KEY) || "{}")); } catch (_) {}
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (_) {} };
 for (const k of Object.keys(S)) {
@@ -16,6 +16,10 @@ for (const k of Object.keys(S)) {
   el.addEventListener("change", () => {
     S[k] = el.type === "checkbox" ? el.checked : el.value;
     save(); applyView();
+    if (k === "translate") {
+      if (S.translate && phase !== "idle" && phase !== "loading") loadMT();
+      if (!S.translate && mt) { mt.terminate(); mt = null; mtReady = mtBusy = mtLoading = false; finals.length = 0; previewJob = null; }
+    }
     if ((k === "lang" || k === "chunk") && phase === "listening")
       setNote("Takes effect next time you tap Start.");
   });
@@ -30,7 +34,7 @@ let previewJob = null;      // latest {id, text}
 const mtFiles = new Map();
 
 function loadMT() {
-  if (mt || mtLoading) return;
+  if (mt || mtLoading || !S.translate) return;
   mtLoading = true;
   mt = new Worker("tingdong-mt.js", { type: "module" });
   mt.onmessage = (e) => {
@@ -270,6 +274,45 @@ $("chunk").value = S.chunk;
   try {
     const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle("qwen-asr");
     const f = await (await dir.getFileHandle(`model-${CFG.modelSize}.bin`)).getFile();
-    if (f.size === Number(CFG.modelSize) && phase === "idle") go.click();
+    if (f.size === Number(CFG.modelSize) && phase === "idle" && crashedIn !== "loading") go.click();
   } catch (_) { /* not cached yet */ }
 })();
+
+/* ---------------- keep downloads, and remember crashes ---------------- */
+/* Ask iOS not to evict the ~0.9 GB of models when storage gets tight. */
+navigator.storage?.persist?.().catch(() => {});
+
+/* iOS kills a tab that uses too much memory and reloads it with no error, so
+ * write a breadcrumb while running and look for it on the next start. */
+const CRASH = "tingdong-crash";
+let crashedIn = "";   // a crash while loading must not auto-load into another one
+function breadcrumb() {
+  if (phase !== "loading" && phase !== "listening") { try { localStorage.removeItem(CRASH); } catch (_) {} return; }
+  const lines = [...$("log").children].slice(-25).map((d) => d.textContent);
+  const mem = performance.memory ? ` js=${(performance.memory.usedJSHeapSize / 1e6).toFixed(0)}MB` : "";
+  try {
+    localStorage.setItem(CRASH, JSON.stringify({
+      phase, translate: S.translate, mt: mtReady ? "ready" : mtLoading ? "loading" : "off",
+      at: new Date().toLocaleTimeString(), mem, lines,
+    }));
+  } catch (_) {}
+}
+setInterval(breadcrumb, 500);
+try {
+  const last = JSON.parse(localStorage.getItem(CRASH) || "null");
+  crashedIn = last?.phase || "";
+  localStorage.removeItem(CRASH);
+  if (last) {
+    const log = $("log");
+    const head = document.createElement("div");
+    head.className = "warn";
+    head.textContent = `Last session ended unexpectedly at ${last.at} while ${last.phase} ` +
+      `(translator ${last.mt}${last.mem}). Its last log lines:`;
+    log.append(head, ...last.lines.map((t) => Object.assign(document.createElement("div"), { textContent: "  " + t })));
+    log.classList.add("open");
+    $("sheet").classList.add("open");
+    setTimeout(() => setNote(last.translate
+      ? "It crashed last time. Try turning off Translate in ⚙︎ to save memory."
+      : "It crashed last time even without the translator. See Log."), 300);
+  }
+} catch (_) {}
